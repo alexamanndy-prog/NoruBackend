@@ -1,12 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Schema as MongooseSchema, Types } from 'mongoose';
 import { Image, ImageSchema } from '../../common/schemas/image.schema';
-import {
-  Concentration,
-  Gender,
-  Longevity,
-  Sillage,
-} from '../../common/enums/perfume.enum';
+import { Concentration, Gender, Longevity, Sillage } from '../../common/enums/perfume.enum';
 
 export type PerfumeDocument = HydratedDocument<Perfume>;
 
@@ -43,6 +38,10 @@ export class Variant {
 
   @Prop({ trim: true, uppercase: true })
   sku?: string;
+
+  /** EAN-13 / UPC / GTIN — one per size, like real retail. Uniqueness enforced in PerfumesService */
+  @Prop({ trim: true })
+  barcode?: string;
 }
 export const VariantSchema = SchemaFactory.createForClass(Variant);
 
@@ -113,7 +112,6 @@ export class Perfume {
   @Prop({ default: 0, min: 0 })
   totalSold: number;
 
-  /** Kept in sync by ReviewsService (visible reviews only) */
   @Prop({ default: 0, min: 0, max: 5 })
   ratingAverage: number;
 
@@ -131,6 +129,7 @@ PerfumeSchema.index({ name: 'text', description: 'text', fragranceFamily: 'text'
 PerfumeSchema.index({ brand: 1, category: 1, gender: 1, isActive: 1 });
 PerfumeSchema.index({ isFeatured: 1, isActive: 1 });
 PerfumeSchema.index({ ratingAverage: -1, ratingCount: -1 });
+PerfumeSchema.index({ 'variants.barcode': 1 }); // fast scanner lookups
 
 /* ---------- Virtuals ---------- */
 PerfumeSchema.virtual('minPrice').get(function (this: Perfume) {

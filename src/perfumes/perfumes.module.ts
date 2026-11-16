@@ -8,6 +8,7 @@ import { Category, CategorySchema } from '../categories/schemas/category.schema'
 import { Cart, CartSchema } from '../cart/schemas/cart.schema';
 import { CloudinaryModule } from '../cloudinary/cloudinary.module';
 import { QrCodeModule } from '../qr-code/qr-code.module';
+import { BarcodesModule } from '../barcodes/barcodes.module';
 
 @Module({
   imports: [
@@ -15,10 +16,11 @@ import { QrCodeModule } from '../qr-code/qr-code.module';
       { name: Perfume.name, schema: PerfumeSchema },
       { name: Brand.name, schema: BrandSchema },
       { name: Category.name, schema: CategorySchema },
-      { name: Cart.name, schema: CartSchema }, // to clean carts on delete
+      { name: Cart.name, schema: CartSchema },
     ]),
     CloudinaryModule,
     QrCodeModule,
+    BarcodesModule,
   ],
   controllers: [PerfumesController],
   providers: [PerfumesService],

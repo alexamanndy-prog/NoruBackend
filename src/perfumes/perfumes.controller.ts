@@ -10,6 +10,7 @@ import {
   Post,
   Query,
   Res,
+  StreamableFile,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
@@ -34,15 +35,12 @@ export class PerfumesController {
   constructor(private readonly perfumesService: PerfumesService) {}
 
   /* ===================== PUBLIC ===================== */
-
-  /** Gallery with filters, search, sort, pagination */
   @Get()
   findGallery(@Query() query: PerfumeQueryDto) {
     return this.perfumesService.findGallery(query);
   }
 
   /* ===================== ADMIN (static routes first) ===================== */
-
   @Get('admin')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
@@ -57,36 +55,59 @@ export class PerfumesController {
     return this.perfumesService.findOneAdmin(id);
   }
 
-  /* ===================== PUBLIC DETAIL (QR target) ===================== */
+  /* ---------- Barcodes ---------- */
+  @Get('barcodes/export')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  async exportBarcodes(): Promise<StreamableFile> {
+    const { content, filename } = await this.perfumesService.exportBarcodesCsv();
+    return new StreamableFile(Buffer.from(content, 'utf8'), {
+      type: 'text/csv; charset=utf-8',
+      disposition: `attachment; filename="${filename}"`,
+    });
+  }
 
+  @Post('barcodes/next')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  nextBarcode() {
+    return this.perfumesService.nextBarcode();
+  }
+
+  @Post('barcodes/backfill')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  backfillBarcodes() {
+    return this.perfumesService.backfillBarcodes();
+  }
+
+  @Get('barcode/:code')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  findByBarcode(@Param('code') code: string) {
+    return this.perfumesService.findByBarcode(code);
+  }
+
+  /* ===================== PUBLIC DETAIL (QR target) ===================== */
   @Get('slug/:slug')
   findBySlug(@Param('slug') slug: string) {
     return this.perfumesService.findBySlug(slug);
   }
 
   @Get('slug/:slug/related')
-  findRelated(
-    @Param('slug') slug: string,
-    @Query('limit', new DefaultValuePipe(4), ParseIntPipe) limit: number,
-  ) {
+  findRelated(@Param('slug') slug: string, @Query('limit', new DefaultValuePipe(4), ParseIntPipe) limit: number) {
     return this.perfumesService.findRelated(slug, limit);
   }
 
   /* ===================== ADMIN: CREATE / UPDATE / DELETE ===================== */
-
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
   @UseInterceptors(FilesInterceptor('images', MAX_PERFUME_IMAGES, imageUploadOptions))
-  create(
-    @Body() dto: CreatePerfumeDto,
-    @UploadedFiles() files: Express.Multer.File[],
-    @CurrentUser('id') userId: string,
-  ) {
+  create(@Body() dto: CreatePerfumeDto, @UploadedFiles() files: Express.Multer.File[], @CurrentUser('id') userId: string) {
     return this.perfumesService.create(dto, files, userId);
   }
 
-  /** Accepts JSON or form-data (without files) */
   @Patch(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
@@ -102,8 +123,27 @@ export class PerfumesController {
     return this.perfumesService.remove(id);
   }
 
-  /* ===================== ADMIN: IMAGES ===================== */
+  /* ===================== ADMIN: BARCODE IMAGE ===================== */
+  /** ?format=svg|png  &download=1 to save as a file */
+  @Get(':id/variants/:variantId/barcode')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  async barcodeImage(
+    @Param('id') id: string,
+    @Param('variantId') variantId: string,
+    @Query('format') format = 'svg',
+    @Query('download') download?: string,
+  ): Promise<StreamableFile> {
+    const image = await this.perfumesService.getBarcodeImage(id, variantId, format === 'png' ? 'png' : 'svg');
+    const disposition = `${download ? 'attachment' : 'inline'}; filename="${image.filename}.${image.type}"`;
 
+    return new StreamableFile(typeof image.data === 'string' ? Buffer.from(image.data, 'utf8') : image.data, {
+      type: image.type === 'png' ? 'image/png' : 'image/svg+xml',
+      disposition,
+    });
+  }
+
+  /* ===================== ADMIN: IMAGES ===================== */
   @Post(':id/images')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
@@ -112,7 +152,6 @@ export class PerfumesController {
     return this.perfumesService.addImages(id, files);
   }
 
-  /** DELETE /perfumes/:id/images?publicId=perfume-store/perfumes/abc123 */
   @Delete(':id/images')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
@@ -128,8 +167,6 @@ export class PerfumesController {
   }
 
   /* ===================== ADMIN: QR CODE ===================== */
-
-  /** Returns { qrCode, link, downloadUrl } — downloadUrl forces a PNG download */
   @Get(':id/qr-code')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
@@ -137,14 +174,10 @@ export class PerfumesController {
     return this.perfumesService.getQrCode(id);
   }
 
-  /** Downloads a print-quality SVG file */
   @Get(':id/qr-code/svg')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
-  async downloadQrSvg(
-    @Param('id') id: string,
-    @Res({ passthrough: true }) res: Response,
-  ) {
+  async downloadQrSvg(@Param('id') id: string, @Res({ passthrough: true }) res: Response) {
     const { fileName, svg } = await this.perfumesService.getQrSvg(id);
     res.setHeader('Content-Type', 'image/svg+xml');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}.svg"`);

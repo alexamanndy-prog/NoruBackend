@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -11,6 +12,7 @@ import { Category, CategoryDocument } from '../categories/schemas/category.schem
 import { Cart } from '../cart/schemas/cart.schema';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
 import { QrCodeService } from '../qr-code/qr-code.service';
+import { BarcodesService } from '../barcodes/barcodes.service';
 import { Image } from '../common/schemas/image.schema';
 import { CreatePerfumeDto } from './dto/create-perfume.dto';
 import { UpdatePerfumeDto } from './dto/update-perfume.dto';
@@ -33,6 +35,13 @@ const SORT_STAGES: Record<PerfumeSort, Record<string, 1 | -1>> = {
   [PerfumeSort.TOP_RATED]: { ratingAverage: -1, ratingCount: -1, _id: -1 },
 };
 
+const csvCell = (value: unknown) => {
+  if (value === null || value === undefined) return '';
+  let s = String(value);
+  if (typeof value === 'string' && /^[=+\-@]/.test(s)) s = `'${s}`;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
 @Injectable()
 export class PerfumesService {
   private readonly imageFolder = 'perfumes';
@@ -44,10 +53,11 @@ export class PerfumesService {
     @InjectModel(Cart.name) private readonly cartModel: Model<Cart>,
     private readonly cloudinary: CloudinaryService,
     private readonly qrCode: QrCodeService,
+    private readonly barcodes: BarcodesService,
   ) {}
 
   /* =====================================================================
-   *  CREATE  (images + automatic QR code)
+   *  CREATE  (images + automatic QR code + automatic barcodes)
    * ===================================================================*/
   async create(dto: CreatePerfumeDto, files: Express.Multer.File[], userId: string) {
     if (!files?.length) {
@@ -57,9 +67,10 @@ export class PerfumesService {
     const brand = await this.getBrandOrFail(dto.brand);
     await this.getCategoryOrFail(dto.category);
     this.assertValidVariants(dto.variants);
+    await this.assertBarcodesAvailable(dto.variants);
 
     const slug = await generateUniqueSlug(this.perfumeModel, `${brand.name} ${dto.name}`);
-    const variants = this.normalizeVariants(dto.variants, slug);
+    const variants = await this.normalizeVariants(dto.variants, slug);
 
     const [images, qrCode] = await Promise.all([
       this.cloudinary.uploadImages(files, this.imageFolder),
@@ -117,6 +128,7 @@ export class PerfumesService {
     if (search?.trim()) {
       const pattern = escapeRegex(search.trim());
       const regex = { $regex: pattern, $options: 'i' };
+      const digits = search.replace(/\s/g, '');
       const matchingBrands = await this.brandModel.find({ name: new RegExp(pattern, 'i') }).select('_id').exec();
 
       match.$or = [
@@ -126,6 +138,7 @@ export class PerfumesService {
         { 'notes.middle': regex },
         { 'notes.base': regex },
         ...(matchingBrands.length ? [{ brand: { $in: matchingBrands.map((b) => b._id) } }] : []),
+        ...(/^\d{8,14}$/.test(digits) ? [{ 'variants.barcode': digits }] : []), // search by barcode
       ];
     }
 
@@ -251,7 +264,7 @@ export class PerfumesService {
 
     if (search?.trim()) {
       const regex = new RegExp(escapeRegex(search.trim()), 'i');
-      filter.$or = [{ name: regex }, { slug: regex }, { 'variants.sku': regex }];
+      filter.$or = [{ name: regex }, { slug: regex }, { 'variants.sku': regex }, { 'variants.barcode': regex }];
     }
     if (isActive !== undefined) filter.isActive = isActive;
     if (brand) filter.brand = brand;
@@ -307,7 +320,8 @@ export class PerfumesService {
 
     if (updates.variants) {
       this.assertValidVariants(updates.variants);
-      perfume.set('variants', this.normalizeVariants(updates.variants, perfume.slug));
+      await this.assertBarcodesAvailable(updates.variants, id);
+      perfume.set('variants', await this.normalizeVariants(updates.variants, perfume.slug));
       delete updates.variants;
     }
 
@@ -319,6 +333,95 @@ export class PerfumesService {
     perfume.set(updates);
     await perfume.save();
     return this.findOneAdmin(id);
+  }
+
+  /* =====================================================================
+   *  BARCODES
+   * ===================================================================*/
+
+  /** Reserve the next barcode number (used by the admin "Generate" button) */
+  async nextBarcode() {
+    const barcode = await this.barcodes.nextUnique((code) => this.barcodeTaken(code));
+    return { barcode, mode: this.barcodes.mode };
+  }
+
+  /** Scanner lookup — any perfume, active or hidden */
+  async findByBarcode(raw: string) {
+    const code = (raw ?? '').replace(/\D/g, '');
+    if (!code) throw new BadRequestException('Enter or scan a barcode');
+
+    const perfume = await this.perfumeModel
+      .findOne({ 'variants.barcode': code })
+      .populate('brand', 'name slug')
+      .populate('category', 'name slug')
+      .exec();
+    if (!perfume) throw new NotFoundException(`No perfume found with barcode ${code}`);
+
+    const variant = perfume.variants.find((v) => v.barcode === code);
+    return { barcode: code, variant, perfume: this.withQrInfo(perfume) };
+  }
+
+  /** Give every size that has no barcode yet a new one */
+  async backfillBarcodes() {
+    const perfumes = await this.perfumeModel
+      .find({ variants: { $elemMatch: { $or: [{ barcode: { $exists: false } }, { barcode: null }, { barcode: '' }] } } })
+      .exec();
+
+    let assigned = 0;
+    for (const perfume of perfumes) {
+      for (const variant of perfume.variants) {
+        if (!variant.barcode) {
+          variant.barcode = await this.barcodes.nextUnique((code) => this.barcodeTaken(code));
+          assigned++;
+        }
+      }
+      await perfume.save();
+    }
+
+    return {
+      perfumes: perfumes.length,
+      assigned,
+      message: assigned ? `Generated ${assigned} barcode(s) for ${perfumes.length} perfume(s)` : 'Every size already has a barcode',
+    };
+  }
+
+  async getBarcodeImage(id: string, variantId: string, format: 'svg' | 'png') {
+    const perfume = await this.findById(id);
+    const variant = isObjectId(variantId) ? perfume.variants.id(variantId) : null;
+    if (!variant) throw new NotFoundException('Size not found');
+    if (!variant.barcode) throw new BadRequestException('This size has no barcode yet — save the perfume to generate one');
+
+    const filename = `barcode-${perfume.slug}-${variant.size}ml`;
+    if (format === 'png') {
+      return { type: 'png' as const, data: await this.barcodes.renderPng(variant.barcode), filename };
+    }
+    return { type: 'svg' as const, data: this.barcodes.renderSvg(variant.barcode), filename };
+  }
+
+  /** Product list for supermarkets / POS systems */
+  async exportBarcodesCsv(): Promise<{ content: string; filename: string }> {
+    const perfumes = await this.perfumeModel.find().populate('brand', 'name').sort({ name: 1 }).lean().exec();
+
+    const rows = perfumes.flatMap((p) =>
+      p.variants
+        .filter((v) => v.barcode)
+        .map((v) => [
+          v.barcode,
+          `${p.name} ${v.size}ml`,
+          (p.brand as unknown as { name?: string } | null)?.name ?? '',
+          v.size,
+          v.price,
+          v.sku ?? '',
+          v.stock,
+          p.isActive ? 'Active' : 'Hidden',
+        ]),
+    );
+
+    const headers = ['Barcode', 'Product', 'Brand', 'Size (ml)', 'Price (NGN)', 'SKU', 'Stock', 'Status'];
+    const content = '\uFEFF' + [headers, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
+    const date = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+
+    return { content, filename: `product-barcodes_${date}.csv` };
   }
 
   /* =====================================================================
@@ -385,7 +488,7 @@ export class PerfumesService {
   }
 
   /* =====================================================================
-   *  QR CODE
+   *  QR CODE (customer authenticity)
    * ===================================================================*/
   async getQrCode(id: string) {
     const perfume = await this.findById(id);
@@ -450,22 +553,62 @@ export class PerfumesService {
     if (new Set(sizes).size !== sizes.length) {
       throw new BadRequestException('Each variant must have a different size');
     }
+
     for (const v of variants) {
       if (v.compareAtPrice !== undefined && v.compareAtPrice <= v.price) {
         throw new BadRequestException(`compareAtPrice for ${v.size}ml must be higher than its price`);
       }
+      if (v.barcode && !BarcodesService.isValid(v.barcode)) {
+        throw new BadRequestException(`Barcode ${v.barcode} (${v.size}ml) is not valid — please check the digits`);
+      }
+    }
+
+    const codes = variants.map((v) => v.barcode).filter(Boolean) as string[];
+    if (new Set(codes).size !== codes.length) {
+      throw new BadRequestException('Each size must have a different barcode');
     }
   }
 
-  private normalizeVariants(variants: VariantDto[], slug: string) {
-    return variants.map((v) => ({
-      ...(v._id ? { _id: new Types.ObjectId(v._id) } : {}),
-      size: v.size,
-      price: v.price,
-      compareAtPrice: v.compareAtPrice,
-      stock: v.stock,
-      sku: v.sku?.trim() || `${slug}-${v.size}ml`.toUpperCase(),
-    }));
+  /** A barcode can belong to only one perfume size in the whole store */
+  private async assertBarcodesAvailable(variants: VariantDto[], excludePerfumeId?: string) {
+    const codes = variants.map((v) => v.barcode).filter(Boolean) as string[];
+    if (!codes.length) return;
+
+    const clash = await this.perfumeModel
+      .findOne({
+        'variants.barcode': { $in: codes },
+        ...(excludePerfumeId ? { _id: { $ne: excludePerfumeId } } : {}),
+      })
+      .select('name variants.barcode')
+      .lean()
+      .exec();
+
+    if (clash) {
+      const used = clash.variants.map((v) => v.barcode).find((c) => c && codes.includes(c));
+      throw new ConflictException(`Barcode ${used} is already used by "${clash.name}"`);
+    }
+  }
+
+  private async barcodeTaken(code: string) {
+    return !!(await this.perfumeModel.exists({ 'variants.barcode': code }));
+  }
+
+  /** Keeps existing _ids (carts stay valid), fills missing SKUs and barcodes */
+  private async normalizeVariants(variants: VariantDto[], slug: string) {
+    const result: Record<string, unknown>[] = [];
+    for (const v of variants) {
+      const barcode = v.barcode || (await this.barcodes.nextUnique((code) => this.barcodeTaken(code)));
+      result.push({
+        ...(v._id ? { _id: new Types.ObjectId(v._id) } : {}),
+        size: v.size,
+        price: v.price,
+        compareAtPrice: v.compareAtPrice,
+        stock: v.stock,
+        sku: v.sku?.trim() || `${slug}-${v.size}ml`.toUpperCase(),
+        barcode,
+      });
+    }
+    return result;
   }
 
   private plainImages(images: Image[]): Image[] {

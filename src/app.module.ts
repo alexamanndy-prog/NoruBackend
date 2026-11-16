@@ -23,6 +23,7 @@ import { CloudinaryModule } from './cloudinary/cloudinary.module';
 import { QrCodeModule } from './qr-code/qr-code.module';
 import { AdminModule } from './admin/admin.module';
 import { ReviewsModule } from './reviews/reviews.module';
+import { BarcodesModule } from './barcodes/barcodes.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { ReviewsModule } from './reviews/reviews.module';
     QrCodeModule,
     AdminModule,
     ReviewsModule,
+    BarcodesModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: AppThrottlerGuard }],
