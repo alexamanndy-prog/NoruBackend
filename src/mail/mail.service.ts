@@ -21,9 +21,9 @@ export class MailService {
   constructor(config: ConfigService) {
     const apiKey = config.get<string>('RESEND_API_KEY')?.trim();
     this.resend = apiKey ? new Resend(apiKey) : null;
-    this.from = config.get<string>('MAIL_FROM', 'Perfume Store <onboarding@resend.dev>');
+    this.from = config.get<string>('MAIL_FROM', 'Norú Luxury <onboarding@resend.dev>');
     this.replyTo = config.get<string>('MAIL_REPLY_TO')?.trim() || undefined;
-    this.appName = config.get<string>('APP_NAME', 'Perfume Store');
+    this.appName = config.get<string>('APP_NAME', 'Norú Luxury');
 
     if (!this.resend) {
       this.logger.warn('RESEND_API_KEY not set — emails will be logged, not sent');
