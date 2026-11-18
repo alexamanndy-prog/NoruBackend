@@ -2,6 +2,7 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Schema as MongooseSchema, Types } from 'mongoose';
 import { Image, ImageSchema } from '../../common/schemas/image.schema';
 import { Concentration, Gender, Longevity, Sillage } from '../../common/enums/perfume.enum';
+import { ProductType } from '../../common/enums/product-type.enum';
 
 export type PerfumeDocument = HydratedDocument<Perfume>;
 
@@ -19,13 +20,14 @@ export class FragranceNotes {
 }
 export const FragranceNotesSchema = SchemaFactory.createForClass(FragranceNotes);
 
-/* ---------- Size / price variant ---------- */
+/* ---------- Price option ---------- */
 @Schema()
 export class Variant {
   _id: Types.ObjectId;
 
-  @Prop({ required: true, min: 1 })
-  size: number; // ml
+  /** ml — 0 means "no size" (one-price products like diffusers, gift sets, lifestyle) */
+  @Prop({ required: true, min: 0 })
+  size: number;
 
   @Prop({ required: true, min: 0 })
   price: number; // Naira
@@ -39,13 +41,13 @@ export class Variant {
   @Prop({ trim: true, uppercase: true })
   sku?: string;
 
-  /** EAN-13 / UPC / GTIN — one per size, like real retail. Uniqueness enforced in PerfumesService */
+  /** EAN-13 / UPC / GTIN — uniqueness enforced in PerfumesService */
   @Prop({ trim: true })
   barcode?: string;
 }
 export const VariantSchema = SchemaFactory.createForClass(Variant);
 
-/* ---------- Perfume ---------- */
+/* ---------- Product ---------- */
 @Schema({
   timestamps: true,
   toJSON: { virtuals: true },
@@ -58,11 +60,19 @@ export class Perfume {
   @Prop({ required: true, unique: true, lowercase: true, trim: true })
   slug: string;
 
+  @Prop({ type: String, enum: ProductType, default: ProductType.PERFUME })
+  productType: ProductType;
+
+  /** One shop collection per product (e.g. Arabian Perfume Oils, Mirror Diffusers) */
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'ProductCollection' })
+  collection?: Types.ObjectId;
+
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'Brand', required: true })
   brand: Types.ObjectId;
 
-  @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'Category', required: true })
-  category: Types.ObjectId;
+  /** Fragrance family — required for perfumes and oils (checked in the service) */
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'Category' })
+  category?: Types.ObjectId;
 
   @Prop({ required: true, trim: true })
   description: string;
@@ -70,11 +80,12 @@ export class Perfume {
   @Prop({ trim: true, maxlength: 200 })
   shortDescription?: string;
 
-  @Prop({ type: String, enum: Gender, default: Gender.UNISEX })
-  gender: Gender;
+  /** Perfumes and oils only (diffusers etc. must not appear under Men / Women / Unisex) */
+  @Prop({ type: String, enum: Gender })
+  gender?: Gender;
 
-  @Prop({ type: String, enum: Concentration, default: Concentration.EDP })
-  concentration: Concentration;
+  @Prop({ type: String, enum: Concentration })
+  concentration?: Concentration;
 
   @Prop({ trim: true })
   fragranceFamily?: string;
@@ -92,7 +103,7 @@ export class Perfume {
     type: [VariantSchema],
     validate: {
       validator: (v: Variant[]) => Array.isArray(v) && v.length > 0,
-      message: 'A perfume must have at least one size/price variant',
+      message: 'A product must have at least one price',
     },
   })
   variants: Types.DocumentArray<Variant>;
@@ -129,7 +140,9 @@ PerfumeSchema.index({ name: 'text', description: 'text', fragranceFamily: 'text'
 PerfumeSchema.index({ brand: 1, category: 1, gender: 1, isActive: 1 });
 PerfumeSchema.index({ isFeatured: 1, isActive: 1 });
 PerfumeSchema.index({ ratingAverage: -1, ratingCount: -1 });
-PerfumeSchema.index({ 'variants.barcode': 1 }); // fast scanner lookups
+PerfumeSchema.index({ 'variants.barcode': 1 });
+PerfumeSchema.index({ collection: 1, isActive: 1 });
+PerfumeSchema.index({ productType: 1, isActive: 1 });
 
 /* ---------- Virtuals ---------- */
 PerfumeSchema.virtual('minPrice').get(function (this: Perfume) {

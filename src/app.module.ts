@@ -24,6 +24,7 @@ import { QrCodeModule } from './qr-code/qr-code.module';
 import { AdminModule } from './admin/admin.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { BarcodesModule } from './barcodes/barcodes.module';
+import { CollectionsModule } from './collections/collections.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { BarcodesModule } from './barcodes/barcodes.module';
     AdminModule,
     ReviewsModule,
     BarcodesModule,
+    CollectionsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: AppThrottlerGuard }],

@@ -2,14 +2,15 @@ import { Transform } from 'class-transformer';
 import { IsInt, IsMongoId, IsNumber, IsOptional, IsString, Matches, MaxLength, Min, ValidateIf } from 'class-validator';
 
 export class VariantDto {
-  /** Send the existing _id when updating, so carts pointing at this variant keep working */
+  /** Send the existing _id when updating, so carts pointing at this option keep working */
   @IsOptional()
   @IsMongoId()
   _id?: string;
 
+  /** ml — 0 for one-price products (diffusers, gift sets, lifestyle) */
   @IsNumber()
-  @Min(1)
-  size: number; // ml
+  @Min(0)
+  size: number;
 
   @IsNumber()
   @Min(0)

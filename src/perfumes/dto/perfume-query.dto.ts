@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import { IsBoolean, IsEnum, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { Concentration, Gender } from '../../common/enums/perfume.enum';
+import { ProductType } from '../../common/enums/product-type.enum';
 import { ToBoolean } from '../../common/utils/transformers';
 
 export enum PerfumeSort {
@@ -20,10 +21,19 @@ export class PerfumeQueryDto extends PaginationQueryDto {
   @IsString()
   brand?: string;
 
-  /** Comma-separated category slugs */
+  /** Comma-separated category (fragrance family) slugs */
   @IsOptional()
   @IsString()
   category?: string;
+
+  /** Comma-separated collection slugs */
+  @IsOptional()
+  @IsString()
+  collection?: string;
+
+  @IsOptional()
+  @IsEnum(ProductType)
+  productType?: ProductType;
 
   @IsOptional()
   @IsEnum(Gender)

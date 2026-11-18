@@ -5,6 +5,7 @@ import { PerfumesService } from './perfumes.service';
 import { Perfume, PerfumeSchema } from './schemas/perfume.schema';
 import { Brand, BrandSchema } from '../brands/schemas/brand.schema';
 import { Category, CategorySchema } from '../categories/schemas/category.schema';
+import { ProductCollection, ProductCollectionSchema } from '../collections/schemas/collection.schema';
 import { Cart, CartSchema } from '../cart/schemas/cart.schema';
 import { CloudinaryModule } from '../cloudinary/cloudinary.module';
 import { QrCodeModule } from '../qr-code/qr-code.module';
@@ -16,6 +17,7 @@ import { BarcodesModule } from '../barcodes/barcodes.module';
       { name: Perfume.name, schema: PerfumeSchema },
       { name: Brand.name, schema: BrandSchema },
       { name: Category.name, schema: CategorySchema },
+      { name: ProductCollection.name, schema: ProductCollectionSchema },
       { name: Cart.name, schema: CartSchema },
     ]),
     CloudinaryModule,

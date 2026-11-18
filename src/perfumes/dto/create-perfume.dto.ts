@@ -11,12 +11,8 @@ import {
   MaxLength,
   ValidateNested,
 } from 'class-validator';
-import {
-  Concentration,
-  Gender,
-  Longevity,
-  Sillage,
-} from '../../common/enums/perfume.enum';
+import { Concentration, Gender, Longevity, Sillage } from '../../common/enums/perfume.enum';
+import { ProductType } from '../../common/enums/product-type.enum';
 import { ParseJson, ToBoolean, Trim } from '../../common/utils/transformers';
 import { VariantDto } from './variant.dto';
 import { FragranceNotesDto } from './fragrance-notes.dto';
@@ -28,11 +24,21 @@ export class CreatePerfumeDto {
   @MaxLength(120)
   name: string;
 
+  @IsOptional()
+  @IsEnum(ProductType, { message: 'Choose a valid product type' })
+  productType?: ProductType;
+
+  @IsOptional()
+  @IsMongoId({ message: 'Please select a valid collection' })
+  collection?: string;
+
   @IsMongoId({ message: 'Please select a valid brand' })
   brand: string;
 
+  /** Fragrance family — required for perfumes and oils (checked in the service) */
+  @IsOptional()
   @IsMongoId({ message: 'Please select a valid category' })
-  category: string;
+  category?: string;
 
   @Trim()
   @IsString()
@@ -75,7 +81,7 @@ export class CreatePerfumeDto {
 
   @ParseJson(VariantDto)
   @IsArray({ message: 'variants must be a JSON array' })
-  @ArrayMinSize(1, { message: 'Add at least one size/price variant' })
+  @ArrayMinSize(1, { message: 'Add at least one price' })
   @ArrayMaxSize(10)
   @ValidateNested({ each: true })
   variants: VariantDto[];

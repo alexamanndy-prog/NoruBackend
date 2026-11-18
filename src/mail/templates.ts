@@ -61,6 +61,9 @@ export const escapeHtml = (value: unknown) =>
 
 export const naira = (amount: number) => `₦${Number(amount || 0).toLocaleString('en-NG')}`;
 
+/** "50ml · " for perfumes, nothing for one-price products */
+const sizePrefix = (size: number) => (size > 0 ? `${size}ml · ` : '');
+
 const fmtDate = (value?: Date | string) =>
   value
     ? new Date(value).toLocaleString('en-NG', { timeZone: 'Africa/Lagos', dateStyle: 'medium', timeStyle: 'short' })
@@ -117,7 +120,7 @@ function itemsTable(order: MailOrder) {
         <td style="padding:10px 0;border-bottom:1px solid ${BORDER};font-size:14px">
           ${i.brandName ? `<div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:${GOLD_DARK}">${escapeHtml(i.brandName)}</div>` : ''}
           <div style="font-weight:bold;color:${NAVY}">${escapeHtml(i.name)}</div>
-          <div style="font-size:12px;color:${MUTED}">${i.size}ml · ${naira(i.price)} × ${i.quantity}</div>
+          <div style="font-size:12px;color:${MUTED}">${sizePrefix(i.size)}${naira(i.price)} × ${i.quantity}</div>
         </td>
         <td align="right" style="padding:10px 0;border-bottom:1px solid ${BORDER};font-size:14px;font-weight:bold;white-space:nowrap;color:${NAVY}">${naira(i.subtotal)}</td>
       </tr>`,
@@ -182,7 +185,7 @@ function layout(o: {
         </td></tr>
         <tr><td style="background:${SURFACE};padding:18px 28px;font-size:12px;line-height:1.6;color:${MUTED}">
           ${o.footerNote ? `${o.footerNote}<br><br>` : ''}
-          © ${new Date().getFullYear()} ${escapeHtml(o.appName)} · Authentic fragrances, verified by QR
+          © ${new Date().getFullYear()} ${escapeHtml(o.appName)} · Shop with confidence — verify our products by QR code
         </td></tr>
       </table>
     </td></tr>

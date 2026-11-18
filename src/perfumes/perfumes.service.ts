@@ -9,11 +9,13 @@ import { Model, PipelineStage, Types } from 'mongoose';
 import { Perfume, PerfumeDocument } from './schemas/perfume.schema';
 import { Brand, BrandDocument } from '../brands/schemas/brand.schema';
 import { Category, CategoryDocument } from '../categories/schemas/category.schema';
+import { ProductCollection } from '../collections/schemas/collection.schema';
 import { Cart } from '../cart/schemas/cart.schema';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
 import { QrCodeService } from '../qr-code/qr-code.service';
 import { BarcodesService } from '../barcodes/barcodes.service';
 import { Image } from '../common/schemas/image.schema';
+import { ProductType, isSizedType } from '../common/enums/product-type.enum';
 import { CreatePerfumeDto } from './dto/create-perfume.dto';
 import { UpdatePerfumeDto } from './dto/update-perfume.dto';
 import { VariantDto } from './dto/variant.dto';
@@ -35,6 +37,12 @@ const SORT_STAGES: Record<PerfumeSort, Record<string, 1 | -1>> = {
   [PerfumeSort.TOP_RATED]: { ratingAverage: -1, ratingCount: -1, _id: -1 },
 };
 
+/** Fields that only make sense for perfumes and oils */
+const FRAGRANCE_ONLY_FIELDS = ['gender', 'concentration', 'fragranceFamily', 'longevity', 'sillage'] as const;
+const EMPTY_NOTES = { top: [], middle: [], base: [] };
+
+const sizeText = (size: number) => (size > 0 ? `${size}ml` : '');
+
 const csvCell = (value: unknown) => {
   if (value === null || value === undefined) return '';
   let s = String(value);
@@ -50,6 +58,7 @@ export class PerfumesService {
     @InjectModel(Perfume.name) private readonly perfumeModel: Model<Perfume>,
     @InjectModel(Brand.name) private readonly brandModel: Model<Brand>,
     @InjectModel(Category.name) private readonly categoryModel: Model<Category>,
+    @InjectModel(ProductCollection.name) private readonly collectionModel: Model<ProductCollection>,
     @InjectModel(Cart.name) private readonly cartModel: Model<Cart>,
     private readonly cloudinary: CloudinaryService,
     private readonly qrCode: QrCodeService,
@@ -61,16 +70,29 @@ export class PerfumesService {
    * ===================================================================*/
   async create(dto: CreatePerfumeDto, files: Express.Multer.File[], userId: string) {
     if (!files?.length) {
-      throw new BadRequestException('Upload at least one perfume image');
+      throw new BadRequestException('Upload at least one image');
     }
 
+    const productType = dto.productType ?? ProductType.PERFUME;
+    const sized = isSizedType(productType);
+
     const brand = await this.getBrandOrFail(dto.brand);
-    await this.getCategoryOrFail(dto.category);
-    this.assertValidVariants(dto.variants);
-    await this.assertBarcodesAvailable(dto.variants);
+    if (sized && !dto.category) throw new BadRequestException('Select a fragrance family (category)');
+    if (dto.category) await this.getCategoryOrFail(dto.category);
+    if (dto.collection) await this.getCollectionOrFail(dto.collection);
+
+    const inputVariants = this.prepareVariants(dto.variants, sized);
+    this.assertValidVariants(inputVariants);
+    await this.assertBarcodesAvailable(inputVariants);
 
     const slug = await generateUniqueSlug(this.perfumeModel, `${brand.name} ${dto.name}`);
-    const variants = await this.normalizeVariants(dto.variants, slug);
+    const variants = await this.normalizeVariants(inputVariants, slug);
+
+    const data: Record<string, unknown> = { ...compact(dto), productType };
+    if (!sized) {
+      FRAGRANCE_ONLY_FIELDS.forEach((field) => delete data[field]);
+      data.notes = EMPTY_NOTES;
+    }
 
     const [images, qrCode] = await Promise.all([
       this.cloudinary.uploadImages(files, this.imageFolder),
@@ -79,7 +101,7 @@ export class PerfumesService {
 
     try {
       const perfume = await this.perfumeModel.create({
-        ...compact(dto),
+        ...data,
         slug,
         variants,
         images,
@@ -114,6 +136,18 @@ export class PerfumesService {
       match.category = { $in: categories.map((c) => c._id) };
     }
 
+    if (query.collection) {
+      const slugs = this.splitList(query.collection);
+      const collections = await this.collectionModel.find({ slug: { $in: slugs }, isActive: true }).select('_id').exec();
+      if (!collections.length) return this.emptyPage(page, limit);
+      match.collection = { $in: collections.map((c) => c._id) };
+    }
+
+    if (query.productType) {
+      // Older products have no type saved — they are perfumes
+      match.productType = query.productType === ProductType.PERFUME ? { $in: [ProductType.PERFUME, null] } : query.productType;
+    }
+
     if (query.gender) match.gender = query.gender;
     if (query.concentration) match.concentration = query.concentration;
     if (query.featured !== undefined) match.isFeatured = query.featured;
@@ -138,7 +172,7 @@ export class PerfumesService {
         { 'notes.middle': regex },
         { 'notes.base': regex },
         ...(matchingBrands.length ? [{ brand: { $in: matchingBrands.map((b) => b._id) } }] : []),
-        ...(/^\d{8,14}$/.test(digits) ? [{ 'variants.barcode': digits }] : []), // search by barcode
+        ...(/^\d{8,14}$/.test(digits) ? [{ 'variants.barcode': digits }] : []),
       ];
     }
 
@@ -182,6 +216,8 @@ export class PerfumesService {
               $project: {
                 name: 1,
                 slug: 1,
+                productType: 1,
+                collection: 1,
                 brand: 1,
                 category: 1,
                 gender: 1,
@@ -229,26 +265,27 @@ export class PerfumesService {
       .select('-qrCode -createdBy')
       .populate('brand', 'name slug logo description')
       .populate('category', 'name slug')
+      .populate('collection', 'name slug group')
       .exec();
 
-    if (!perfume) throw new NotFoundException('Perfume not found');
+    if (!perfume) throw new NotFoundException('Product not found');
     return perfume;
   }
 
   async findRelated(slug: string, limit = 4): Promise<PerfumeDocument[]> {
     const perfume = await this.perfumeModel
       .findOne({ slug: slug.toLowerCase(), isActive: true })
-      .select('_id brand category')
+      .select('_id brand category collection')
       .exec();
-    if (!perfume) throw new NotFoundException('Perfume not found');
+    if (!perfume) throw new NotFoundException('Product not found');
+
+    const related: Record<string, unknown>[] = [{ brand: perfume.brand }];
+    if (perfume.collection) related.unshift({ collection: perfume.collection });
+    if (perfume.category) related.push({ category: perfume.category });
 
     return this.perfumeModel
-      .find({
-        _id: { $ne: perfume._id },
-        isActive: true,
-        $or: [{ category: perfume.category }, { brand: perfume.brand }],
-      })
-      .select('name slug brand gender concentration images variants isFeatured ratingAverage ratingCount')
+      .find({ _id: { $ne: perfume._id }, isActive: true, $or: related })
+      .select('name slug productType brand gender concentration images variants isFeatured ratingAverage ratingCount')
       .populate('brand', 'name slug')
       .sort({ totalSold: -1, createdAt: -1 })
       .limit(Math.min(limit, 12))
@@ -279,6 +316,7 @@ export class PerfumesService {
         .select('-description')
         .populate('brand', 'name slug')
         .populate('category', 'name slug')
+        .populate('collection', 'name slug group')
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
@@ -290,21 +328,22 @@ export class PerfumesService {
   }
 
   async findById(id: string): Promise<PerfumeDocument> {
-    if (!isObjectId(id)) throw new NotFoundException('Perfume not found');
+    if (!isObjectId(id)) throw new NotFoundException('Product not found');
     const perfume = await this.perfumeModel.findById(id).exec();
-    if (!perfume) throw new NotFoundException('Perfume not found');
+    if (!perfume) throw new NotFoundException('Product not found');
     return perfume;
   }
 
   async findOneAdmin(id: string) {
-    if (!isObjectId(id)) throw new NotFoundException('Perfume not found');
+    if (!isObjectId(id)) throw new NotFoundException('Product not found');
     const perfume = await this.perfumeModel
       .findById(id)
       .populate('brand', 'name slug')
       .populate('category', 'name slug')
+      .populate('collection', 'name slug group')
       .populate('createdBy', 'name email')
       .exec();
-    if (!perfume) throw new NotFoundException('Perfume not found');
+    if (!perfume) throw new NotFoundException('Product not found');
     return this.withQrInfo(perfume);
   }
 
@@ -313,24 +352,42 @@ export class PerfumesService {
    * ===================================================================*/
   async update(id: string, dto: UpdatePerfumeDto) {
     const perfume = await this.findById(id);
-    const updates = compact(dto);
+    const updates: Record<string, any> = compact(dto);
+
+    const productType: ProductType = updates.productType ?? perfume.productType ?? ProductType.PERFUME;
+    const sized = isSizedType(productType);
 
     if (updates.brand) await this.getBrandOrFail(updates.brand);
     if (updates.category) await this.getCategoryOrFail(updates.category);
+    if (updates.collection) await this.getCollectionOrFail(updates.collection);
+    if (sized && !(updates.category ?? perfume.category)) {
+      throw new BadRequestException('Select a fragrance family (category)');
+    }
 
     if (updates.variants) {
-      this.assertValidVariants(updates.variants);
-      await this.assertBarcodesAvailable(updates.variants, id);
-      perfume.set('variants', await this.normalizeVariants(updates.variants, perfume.slug));
+      const inputVariants = this.prepareVariants(updates.variants, sized);
+      this.assertValidVariants(inputVariants);
+      await this.assertBarcodesAvailable(inputVariants, id);
+      perfume.set('variants', await this.normalizeVariants(inputVariants, perfume.slug));
       delete updates.variants;
     }
 
-    if (updates.notes) {
-      perfume.set('notes', updates.notes);
+    if (sized) {
+      if (updates.notes) {
+        perfume.set('notes', updates.notes);
+        delete updates.notes;
+      }
+    } else {
+      // Diffusers / gift sets / lifestyle: clear perfume-only details
+      FRAGRANCE_ONLY_FIELDS.forEach((field) => {
+        delete updates[field];
+        perfume.set(field, undefined);
+      });
       delete updates.notes;
+      perfume.set('notes', EMPTY_NOTES);
     }
 
-    perfume.set(updates);
+    perfume.set({ ...updates, productType });
     await perfume.save();
     return this.findOneAdmin(id);
   }
@@ -338,14 +395,11 @@ export class PerfumesService {
   /* =====================================================================
    *  BARCODES
    * ===================================================================*/
-
-  /** Reserve the next barcode number (used by the admin "Generate" button) */
   async nextBarcode() {
     const barcode = await this.barcodes.nextUnique((code) => this.barcodeTaken(code));
     return { barcode, mode: this.barcodes.mode };
   }
 
-  /** Scanner lookup — any perfume, active or hidden */
   async findByBarcode(raw: string) {
     const code = (raw ?? '').replace(/\D/g, '');
     if (!code) throw new BadRequestException('Enter or scan a barcode');
@@ -354,14 +408,14 @@ export class PerfumesService {
       .findOne({ 'variants.barcode': code })
       .populate('brand', 'name slug')
       .populate('category', 'name slug')
+      .populate('collection', 'name slug group')
       .exec();
-    if (!perfume) throw new NotFoundException(`No perfume found with barcode ${code}`);
+    if (!perfume) throw new NotFoundException(`No product found with barcode ${code}`);
 
     const variant = perfume.variants.find((v) => v.barcode === code);
     return { barcode: code, variant, perfume: this.withQrInfo(perfume) };
   }
 
-  /** Give every size that has no barcode yet a new one */
   async backfillBarcodes() {
     const perfumes = await this.perfumeModel
       .find({ variants: { $elemMatch: { $or: [{ barcode: { $exists: false } }, { barcode: null }, { barcode: '' }] } } })
@@ -381,24 +435,23 @@ export class PerfumesService {
     return {
       perfumes: perfumes.length,
       assigned,
-      message: assigned ? `Generated ${assigned} barcode(s) for ${perfumes.length} perfume(s)` : 'Every size already has a barcode',
+      message: assigned ? `Generated ${assigned} barcode(s) for ${perfumes.length} product(s)` : 'Every product already has a barcode',
     };
   }
 
   async getBarcodeImage(id: string, variantId: string, format: 'svg' | 'png') {
     const perfume = await this.findById(id);
     const variant = isObjectId(variantId) ? perfume.variants.id(variantId) : null;
-    if (!variant) throw new NotFoundException('Size not found');
-    if (!variant.barcode) throw new BadRequestException('This size has no barcode yet — save the perfume to generate one');
+    if (!variant) throw new NotFoundException('Price option not found');
+    if (!variant.barcode) throw new BadRequestException('No barcode yet — save the product to generate one');
 
-    const filename = `barcode-${perfume.slug}-${variant.size}ml`;
+    const filename = ['barcode', perfume.slug, sizeText(variant.size)].filter(Boolean).join('-');
     if (format === 'png') {
       return { type: 'png' as const, data: await this.barcodes.renderPng(variant.barcode), filename };
     }
     return { type: 'svg' as const, data: this.barcodes.renderSvg(variant.barcode), filename };
   }
 
-  /** Product list for supermarkets / POS systems */
   async exportBarcodesCsv(): Promise<{ content: string; filename: string }> {
     const perfumes = await this.perfumeModel.find().populate('brand', 'name').sort({ name: 1 }).lean().exec();
 
@@ -407,9 +460,9 @@ export class PerfumesService {
         .filter((v) => v.barcode)
         .map((v) => [
           v.barcode,
-          `${p.name} ${v.size}ml`,
+          [p.name, sizeText(v.size)].filter(Boolean).join(' '),
           (p.brand as unknown as { name?: string } | null)?.name ?? '',
-          v.size,
+          v.size > 0 ? v.size : '',
           v.price,
           v.sku ?? '',
           v.stock,
@@ -433,7 +486,7 @@ export class PerfumesService {
     const perfume = await this.findById(id);
     if (perfume.images.length + files.length > MAX_PERFUME_IMAGES) {
       throw new BadRequestException(
-        `A perfume can have at most ${MAX_PERFUME_IMAGES} images (currently ${perfume.images.length})`,
+        `A product can have at most ${MAX_PERFUME_IMAGES} images (currently ${perfume.images.length})`,
       );
     }
 
@@ -455,10 +508,10 @@ export class PerfumesService {
 
     const perfume = await this.findById(id);
     const exists = perfume.images.some((img) => img.publicId === publicId);
-    if (!exists) throw new NotFoundException('Image not found on this perfume');
+    if (!exists) throw new NotFoundException('Image not found on this product');
 
     if (perfume.images.length <= 1) {
-      throw new BadRequestException('A perfume must keep at least one image. Upload a new one before removing this.');
+      throw new BadRequestException('A product must keep at least one image. Upload a new one before removing this.');
     }
 
     perfume.set('images', this.plainImages(perfume.images).filter((img) => img.publicId !== publicId));
@@ -548,18 +601,35 @@ export class PerfumesService {
     return category;
   }
 
+  private async getCollectionOrFail(id: string) {
+    if (!isObjectId(id)) throw new BadRequestException('Please select a valid collection');
+    const collection = await this.collectionModel.findById(id).select('_id').lean().exec();
+    if (!collection) throw new BadRequestException('Selected collection does not exist');
+    return collection;
+  }
+
+  /** Perfumes/oils: ml sizes. Everything else: exactly one price, size 0 */
+  private prepareVariants(variants: VariantDto[], sized: boolean): VariantDto[] {
+    if (!sized) return [{ ...variants[0], size: 0 }];
+    if (variants.some((v) => !v.size || v.size < 1)) {
+      throw new BadRequestException('Each size needs a value in ml');
+    }
+    return variants;
+  }
+
   private assertValidVariants(variants: VariantDto[]) {
     const sizes = variants.map((v) => v.size);
     if (new Set(sizes).size !== sizes.length) {
-      throw new BadRequestException('Each variant must have a different size');
+      throw new BadRequestException('Each size must be different');
     }
 
     for (const v of variants) {
+      const label = sizeText(v.size) || 'this product';
       if (v.compareAtPrice !== undefined && v.compareAtPrice <= v.price) {
-        throw new BadRequestException(`compareAtPrice for ${v.size}ml must be higher than its price`);
+        throw new BadRequestException(`The old price for ${label} must be higher than its price`);
       }
       if (v.barcode && !BarcodesService.isValid(v.barcode)) {
-        throw new BadRequestException(`Barcode ${v.barcode} (${v.size}ml) is not valid — please check the digits`);
+        throw new BadRequestException(`Barcode ${v.barcode} (${label}) is not valid — please check the digits`);
       }
     }
 
@@ -569,7 +639,6 @@ export class PerfumesService {
     }
   }
 
-  /** A barcode can belong to only one perfume size in the whole store */
   private async assertBarcodesAvailable(variants: VariantDto[], excludePerfumeId?: string) {
     const codes = variants.map((v) => v.barcode).filter(Boolean) as string[];
     if (!codes.length) return;
@@ -604,7 +673,7 @@ export class PerfumesService {
         price: v.price,
         compareAtPrice: v.compareAtPrice,
         stock: v.stock,
-        sku: v.sku?.trim() || `${slug}-${v.size}ml`.toUpperCase(),
+        sku: v.sku?.trim() || [slug, sizeText(v.size)].filter(Boolean).join('-').toUpperCase(),
         barcode,
       });
     }
