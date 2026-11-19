@@ -8,10 +8,11 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   ValidateNested,
 } from 'class-validator';
-import { Concentration, Gender, Longevity, Sillage } from '../../common/enums/perfume.enum';
+import { Gender, Longevity, Sillage } from '../../common/enums/perfume.enum';
 import { ProductType } from '../../common/enums/product-type.enum';
 import { ParseJson, ToBoolean, Trim } from '../../common/utils/transformers';
 import { VariantDto } from './variant.dto';
@@ -56,9 +57,12 @@ export class CreatePerfumeDto {
   @IsEnum(Gender)
   gender?: Gender;
 
+  /** Code from the admin Concentrations list */
   @IsOptional()
-  @IsEnum(Concentration)
-  concentration?: Concentration;
+  @Trim()
+  @IsString()
+  @Matches(/^[a-z0-9_-]+$/, { message: 'Choose a valid concentration' })
+  concentration?: string;
 
   @IsOptional()
   @Trim()

@@ -25,6 +25,7 @@ import { AdminModule } from './admin/admin.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { BarcodesModule } from './barcodes/barcodes.module';
 import { CollectionsModule } from './collections/collections.module';
+import { ConcentrationsModule } from './concentrations/concentrations.module';
 
 @Module({
   imports: [
@@ -59,6 +60,7 @@ import { CollectionsModule } from './collections/collections.module';
     ReviewsModule,
     BarcodesModule,
     CollectionsModule,
+    ConcentrationsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: AppThrottlerGuard }],

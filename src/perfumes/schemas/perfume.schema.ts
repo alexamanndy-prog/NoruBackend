@@ -1,7 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Schema as MongooseSchema, Types } from 'mongoose';
 import { Image, ImageSchema } from '../../common/schemas/image.schema';
-import { Concentration, Gender, Longevity, Sillage } from '../../common/enums/perfume.enum';
+import { Gender, Longevity, Sillage } from '../../common/enums/perfume.enum';
 import { ProductType } from '../../common/enums/product-type.enum';
 
 export type PerfumeDocument = HydratedDocument<Perfume>;
@@ -63,7 +63,7 @@ export class Perfume {
   @Prop({ type: String, enum: ProductType, default: ProductType.PERFUME })
   productType: ProductType;
 
-  /** One shop collection per product (e.g. Arabian Perfume Oils, Mirror Diffusers) */
+  /** One shop collection per product */
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'ProductCollection' })
   collection?: Types.ObjectId;
 
@@ -80,12 +80,13 @@ export class Perfume {
   @Prop({ trim: true, maxlength: 200 })
   shortDescription?: string;
 
-  /** Perfumes and oils only (diffusers etc. must not appear under Men / Women / Unisex) */
+  /** Perfumes and oils only */
   @Prop({ type: String, enum: Gender })
   gender?: Gender;
 
-  @Prop({ type: String, enum: Concentration })
-  concentration?: Concentration;
+  /** Code from the admin-managed Concentrations list, e.g. "eau_de_parfum" */
+  @Prop({ trim: true, lowercase: true })
+  concentration?: string;
 
   @Prop({ trim: true })
   fragranceFamily?: string;
@@ -143,6 +144,7 @@ PerfumeSchema.index({ ratingAverage: -1, ratingCount: -1 });
 PerfumeSchema.index({ 'variants.barcode': 1 });
 PerfumeSchema.index({ collection: 1, isActive: 1 });
 PerfumeSchema.index({ productType: 1, isActive: 1 });
+PerfumeSchema.index({ concentration: 1, isActive: 1 });
 
 /* ---------- Virtuals ---------- */
 PerfumeSchema.virtual('minPrice').get(function (this: Perfume) {

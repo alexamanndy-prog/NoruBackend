@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
-import { IsBoolean, IsEnum, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsBoolean, IsEnum, IsNumber, IsOptional, IsString, Matches, Min } from 'class-validator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
-import { Concentration, Gender } from '../../common/enums/perfume.enum';
+import { Gender } from '../../common/enums/perfume.enum';
 import { ProductType } from '../../common/enums/product-type.enum';
 import { ToBoolean } from '../../common/utils/transformers';
 
@@ -39,9 +39,11 @@ export class PerfumeQueryDto extends PaginationQueryDto {
   @IsEnum(Gender)
   gender?: Gender;
 
+  /** Concentration code from the admin list */
   @IsOptional()
-  @IsEnum(Concentration)
-  concentration?: Concentration;
+  @IsString()
+  @Matches(/^[a-z0-9_-]+$/)
+  concentration?: string;
 
   @IsOptional()
   @Type(() => Number)
@@ -63,7 +65,7 @@ export class PerfumeQueryDto extends PaginationQueryDto {
   @IsOptional()
   @ToBoolean()
   @IsBoolean()
-  featured?: boolean;
+  featured?: boolean;   
 
   @IsOptional()
   @IsEnum(PerfumeSort)
